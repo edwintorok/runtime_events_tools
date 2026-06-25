@@ -1,14 +1,16 @@
 ### Unreleased
+* Check process status from a dedicated domain (#100, @ngorogiannis)
+* gc-stats no longer prints a (zeroed) stats block when the run fails; it now reports only the error (#100, @ngorogiannis)
 * Wait for the traced process to initialise its ring buffers (@ngorogiannis)
 * Report a failure to launch or attach to the traced process as an error
   rather than an uncaught exception, and don't print empty statistics
   when nothing was collected (@ngorogiannis)
-
-### 0.5.3
 * Report lost events count only at end of run (#96, @ngorogiannis)
 * Sample max RSS usage from a dedicated domain (#95, @ngorogiannis)
 * Record and don't crash on latencies above histogram threshold (#93, @ngorogiannis)
 * Extract common code between gc stats implementations for OCaml 5.0 and 5.3 (#93, @ngorogiannis)
+
+### 0.5.4
 * Reinstate olly latency command. (#86, @tmcgilchrist)
 * Avoid overriding the user's OCAMLRUNPARAM settings. (#83, @gasche)
 * Remove help subcommand, as it relies on cmdliner internals. (#81, @theAlexes)
