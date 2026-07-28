@@ -1,11 +1,24 @@
 external is_process_alive : int -> bool = "olly_is_process_alive"
 
-let lost_events_count = ref 0
+module Lost_events = struct
+  let lost_events_count = ref 0
 
-let lost_events _ring_id num =
-  let sum = !lost_events_count + num in
-  (* detect overflow and stay at [max_int] *)
-  lost_events_count := if sum < 0 then max_int else sum
+  let callback _ring_id num =
+    let sum = !lost_events_count + num in
+    (* detect overflow and stay at [max_int] *)
+    lost_events_count := if sum < 0 then max_int else sum
+
+  let were_events_lost () = !lost_events_count > 0
+
+  let display () =
+    if were_events_lost () then begin
+      Printf.eprintf "Lost %d events, stats not reliable%s\n%!"
+        !lost_events_count
+        (if !lost_events_count = max_int then
+           " (possible counter overflow detected)\n%!"
+         else "")
+    end
+end
 
 type subprocess = {
   alive : unit -> bool;
@@ -199,13 +212,7 @@ let olly config exec_args =
   config.init ();
   let finally () =
     config.cleanup ();
-    if !lost_events_count > 0 then begin
-      Printf.eprintf "Lost %d events, stats not reliable%s\n%!"
-        !lost_events_count
-        (if !lost_events_count = max_int then
-           " (possible counter overflow detected)\n%!"
-         else "")
-    end
+    Lost_events.display ()
   in
   Fun.protect ~finally (fun () ->
       let runtime_config =
@@ -228,6 +235,7 @@ let olly config exec_args =
             } =
               config
             in
+            let lost_events = Lost_events.callback in
             Runtime_events.Callbacks.create ~runtime_begin ~runtime_end
               ~runtime_counter ~lifecycle ~lost_events ()
             |> extra

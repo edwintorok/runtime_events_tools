@@ -153,7 +153,40 @@ let print_percentiles json output hist outliers =
       Buffer.contents buf
     in
     Printf.fprintf oc
-      {|{"version": 2, "wall_time": %.2f, "cpu_time": %.2f, "gc_time": %.2f, "gc_overhead": %.2f, "max_rss_kb": %d, "domain_stats": {%s}, "mean_latency": %f, "stddev_latency": %f, "min_latency": %.2f, "max_latency": %f, "distr_latency": {%s}, "outliers": {"count": %d, "mean_latency": %f, "max_latency": %f}, "allocations": {"total_heap": %.0f, "minor_heap": %.0f, "major_heap": %.0f, "promoted_words": %.0f, "promoted_pct": %.2f}, "domain_alloc_stats": {%s}, "collections": {"minor": %i, "major": %i, "forced_major": %i, "compactions": %i}}|}
+      {|{       
+  "version": 2,       
+  "wall_time": %.2f,       
+  "cpu_time": %.2f,       
+  "gc_time": %.2f,       
+  "gc_overhead": %.2f,       
+  "max_rss_kb": %d,       
+  "domain_stats": {%s},       
+  "mean_latency": %f,       
+  "stddev_latency": %f,       
+  "min_latency": %.2f,       
+  "max_latency": %f,       
+  "distr_latency": {%s},       
+  "outliers": {       
+    "count": %d,       
+    "mean_latency": %f,       
+    "max_latency": %f
+  },       
+  "allocations": {       
+    "total_heap": %.0f,       
+    "minor_heap": %.0f,       
+    "major_heap": %.0f,       
+    "promoted_words": %.0f,       
+    "promoted_pct": %.2f
+  },       
+  "domain_alloc_stats": {%s},       
+  "collections": {       
+    "minor": %i,       
+    "major": %i,       
+    "forced_major": %i,       
+    "compactions": %i
+  },       
+  "stats_reliable": %b
+}|}
       real_time !total_cpu_time total_gc_time gc_overhead
       (Olly_common.Max_rss.max_rss_kb rss_collector)
       domain_stats mean_latency stddev_latency min_latency max_latency distribs
@@ -162,6 +195,7 @@ let print_percentiles json output hist outliers =
       total_heap !minor_words !major_words !promoted_words promoted_pct
       domain_alloc_stats !minor_collections !major_collections
       !forced_major_collections !compactions
+      (not @@ Olly_common.Launch.Lost_events.were_events_lost ())
   else (
     Printf.fprintf oc "\n";
     Printf.fprintf oc "Execution times:\n";
