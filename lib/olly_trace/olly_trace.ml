@@ -32,21 +32,24 @@ let trace poll_sleep fmt trace_filename emit_counter runtime_events_dir
   and extra = Olly_custom_events.v tracer
   and lifecycle _ _ _ _ = () in
   let open Olly_common.Launch in
-  olly
-    {
-      extra;
-      runtime_begin;
-      runtime_counter;
-      runtime_end;
-      lifecycle;
-      init;
-      cleanup;
-      on_launch;
-      poll_sleep;
-      runtime_events_dir;
-      runtime_events_log_wsize;
-    }
-    exec_args
+  try
+    `Ok
+      (olly
+         {
+           extra;
+           runtime_begin;
+           runtime_counter;
+           runtime_end;
+           lifecycle;
+           init;
+           cleanup;
+           on_launch;
+           poll_sleep;
+           runtime_events_dir;
+           runtime_events_log_wsize;
+         }
+         exec_args)
+  with Fail msg -> `Error (false, msg)
 
 let trace_cmd format_list =
   let open Cmdliner in
@@ -90,5 +93,7 @@ let trace_cmd format_list =
   let info = Cmd.info "trace" ~doc ~sdocs ~man in
   Cmd.v info
     Term.(
-      const trace $ freq_option $ format_option $ trace_filename $ emit_counter
-      $ runtime_events_dir $ runtime_events_log_wsize $ exec_args 1)
+      ret
+        (const trace $ freq_option $ format_option $ trace_filename
+       $ emit_counter $ runtime_events_dir $ runtime_events_log_wsize
+       $ exec_args 1))

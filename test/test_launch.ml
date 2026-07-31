@@ -36,6 +36,27 @@ let process_launch () =
         Printf.printf "%s" (Printexc.to_string _exn);
         false)
 
+(* A child can take much longer than one might expect to get to the point
+   where it initialises its ring buffers: on macOS, the first execution of a
+   freshly built binary spends a few hundred milliseconds in the kernel
+   (validating its code signature) before running any OCaml code. Emulate a
+   slow start with a shell that sleeps and then execs the traced program,
+   which keeps the pid, and hence the name of the ring file, unchanged. *)
+let process_launch_slow_start () =
+  let open Olly_common in
+  let config = { Launch.log_wsize = None; dir = None } in
+  let child =
+    Launch.exec_process config
+      [ "/bin/sh"; "-c"; "sleep 0.5; exec ./run_endlessly.exe" ]
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      (try Unix.kill child.pid Sys.sigkill with Unix.Unix_error _ -> ());
+      child.close ())
+    (fun () ->
+      Alcotest.(check bool)
+        "process with a slow start should be traced" true (child.alive ()))
+
 let () =
   let open Alcotest in
   run "Runtime Events Tools"
@@ -44,5 +65,7 @@ let () =
         [
           test_case "process::launch success" `Quick process_launch;
           test_case "process::launch failure" `Quick process_launch_failure;
+          test_case "process::launch slow start" `Quick
+            process_launch_slow_start;
         ] );
     ]

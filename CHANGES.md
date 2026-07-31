@@ -1,4 +1,8 @@
 ### Unreleased
+* Wait for the traced process to initialise its ring buffers (@ngorogiannis)
+* Report a failure to launch or attach to the traced process as an error
+  rather than an uncaught exception, and don't print empty statistics
+  when nothing was collected (@ngorogiannis)
 
 ### 0.5.3
 * Report lost events count only at end of run (#96, @ngorogiannis)

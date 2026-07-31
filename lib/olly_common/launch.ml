@@ -33,6 +33,87 @@ type exec_config = Attach of string * int | Execute of string list
 (* Raised by exec_process to indicate various unrecoverable failures. *)
 exception Fail of string
 
+(* How long to wait for a freshly launched child to initialise its ring
+   buffers, and how often to check in the meantime.
+
+   The child only creates its [<pid>.events] file while initialising the
+   runtime, so the file does not exist yet just after the fork. How long it
+   takes to appear depends on how quickly the child starts up: on macOS the
+   first execution of a freshly built binary spends a few hundred
+   milliseconds in the kernel (code signature validation) before any OCaml
+   code runs. A fixed wait is therefore either flaky or needlessly slow, so
+   we poll instead. *)
+let ring_wait_timeout = 5.0
+let ring_wait_interval = 0.005
+let ring_file_of dir pid = Filename.concat dir (string_of_int pid ^ ".events")
+
+(* The runtime creates the ring file, then resizes it to its final size, then
+   fills in the metadata header (see [runtime/runtime_events.c] in the OCaml
+   distribution). A cursor created in between would either fail to map the
+   file or, worse, succeed against an all-zero header and then report no
+   events at all, so wait for the header to be written. [version] and
+   [max_domains] are its first two fields, both non-zero once written. *)
+let ring_header_ready ring_file =
+  let prefix_len = 16 in
+  match open_in_bin ring_file with
+  | exception Sys_error _ -> false
+  | ic ->
+      Fun.protect
+        ~finally:(fun () -> close_in_noerr ic)
+        (fun () ->
+          let buf = Bytes.create prefix_len in
+          match really_input ic buf 0 prefix_len with
+          (* The child wrote the header in this machine's native endianness. *)
+          | () ->
+              Bytes.get_int64_ne buf 0 <> 0L && Bytes.get_int64_ne buf 8 <> 0L
+          | exception End_of_file -> false)
+
+(* Wait for the child process [pid] to initialise its ring buffers and return
+   a cursor on them. Raises [Fail] if the child dies first, or if it has not
+   initialised them within [ring_wait_timeout]. *)
+let create_cursor_when_ready ~dir ~pid ~executable =
+  let ring_file = ring_file_of dir pid in
+  let deadline = Unix.gettimeofday () +. ring_wait_timeout in
+  let child_exited () =
+    match Unix.waitpid [ Unix.WNOHANG ] pid with
+    | p, _ -> p = pid
+    | exception Unix.Unix_error (Unix.EINTR, _, _) -> false
+  in
+  let rec wait () =
+    if not (ring_header_ready ring_file) then retry None
+    else
+      match Runtime_events.create_cursor (Some (dir, pid)) with
+      | cursor -> cursor
+      | exception Failure msg -> retry (Some msg)
+  and retry last_error =
+    if child_exited () then
+      raise
+        (Fail
+           (Printf.sprintf
+              "%s exited before initialising its runtime events ring buffer \
+               %s. Was it built with OCaml 5.0 or later?"
+              executable ring_file))
+    else if Unix.gettimeofday () >= deadline then begin
+      (* We cannot monitor the child and are about to bail out, so do not
+         leave it running behind us. *)
+      (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
+      (try ignore (Unix.waitpid [] pid) with Unix.Unix_error _ -> ());
+      raise
+        (Fail
+           (Printf.sprintf
+              "gave up after %.1fs waiting for %s to initialise its runtime \
+               events ring buffer %s.%s Was it built with OCaml 5.0 or later?"
+              ring_wait_timeout executable ring_file
+              (match last_error with None -> "" | Some msg -> " " ^ msg)))
+    end
+    else begin
+      (try Unix.sleepf ring_wait_interval
+       with Unix.Unix_error (Unix.EINTR, _, _) -> ());
+      wait ()
+    end
+  in
+  wait ()
+
 let exec_process (config : runtime_events_config) (args : string list) :
     subprocess =
   if not (List.length args > 0) then
@@ -95,12 +176,8 @@ let exec_process (config : runtime_events_config) (args : string list) :
       raise
         (Fail (Printf.sprintf "executable %s not found" executable_filename))
   in
-  Unix.sleepf 0.1;
   let cursor =
-    try Runtime_events.create_cursor (Some (dir, child_pid))
-    with Failure str ->
-      (* Provide some context for which directory was passed to create_cursor *)
-      failwith (str ^ " Directory: " ^ dir)
+    create_cursor_when_ready ~dir ~pid:child_pid ~executable:executable_filename
   in
   let alive () =
     match Unix.waitpid [ Unix.WNOHANG ] child_pid with
@@ -114,12 +191,8 @@ let exec_process (config : runtime_events_config) (args : string list) :
        the child process not to remove them. However, if the user
        explicitly set OCAML_RUNTIME_EVENTS_PRESERVE=1 we honour
        their intent and leave the file in place. *)
-    if Sys.getenv_opt "OCAML_RUNTIME_EVENTS_PRESERVE" <> Some "1" then begin
-      let ring_file =
-        Filename.concat dir (string_of_int child_pid ^ ".events")
-      in
-      Unix.unlink ring_file
-    end
+    if Sys.getenv_opt "OCAML_RUNTIME_EVENTS_PRESERVE" <> Some "1" then
+      Unix.unlink (ring_file_of dir child_pid)
   in
   { alive; cursor; close; pid = child_pid }
 
@@ -128,7 +201,7 @@ let attach_process (dir : string) (pid : int) : subprocess =
   if not (is_process_alive pid) then
     raise (Fail (Printf.sprintf "process %d does not exist" pid));
   (* Check the events file exists and is readable *)
-  let ring_file = Filename.concat dir (string_of_int pid ^ ".events") in
+  let ring_file = ring_file_of dir pid in
   if not (Sys.file_exists ring_file) then
     raise
       (Fail
@@ -210,11 +283,7 @@ let empty_config =
 
 let olly config exec_args =
   config.init ();
-  let finally () =
-    config.cleanup ();
-    Lost_events.display ()
-  in
-  Fun.protect ~finally (fun () ->
+  Fun.protect ~finally:Lost_events.display (fun () ->
       let runtime_config =
         {
           dir = config.runtime_events_dir;
@@ -222,6 +291,11 @@ let olly config exec_args =
         }
       in
       let child = launch_process runtime_config exec_args in
+      (* [cleanup] reports what was collected and undoes what [on_launch] set
+         up, so it must only run once the child has actually been launched:
+         otherwise it would print empty results and its own failure would mask
+         the launch failure (as [Fun.Finally_raised]). *)
+      Fun.protect ~finally:config.cleanup @@ fun () ->
       Fun.protect ~finally:child.close (fun () ->
           config.on_launch child;
           let callbacks =
